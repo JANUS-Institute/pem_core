@@ -1,0 +1,19 @@
+[project]
+name = "pem-core"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Thomas Marks", email = "marksta@umich.edu" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "amisc",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+amisc = { path = "../amisc", editable = true }
