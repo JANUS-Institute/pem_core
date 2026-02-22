@@ -1,8 +1,8 @@
 import numpy as np
 from typing import TypeVar, Callable
 from numpy.typing import NDArray, ArrayLike
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from amisc import System
+import amisc.distribution
 
 T = TypeVar("T", bound=np.floating)
 F = TypeVar("F", np.floating, float)
@@ -40,16 +40,16 @@ def _relative_gaussian_likelihood(x: ArrayLike, y: ArrayLike, std: float) -> tup
 
     return likelihood, distance
 
-def _log_prior(self, params: dict[str, ArrayLike]) -> float:
+def _log_prior(system: System, params: dict[str, ArrayLike]) -> float:
     """
     Compute the log-prior distribution of a system when evaluated at a dictionary of parameter values
     """
     logp = 0.0
     for key, value in params.items():
-        var = self.system.inputs()[key]
+        var = system.inputs()[key]
         denorm = var.denormalize(value)
 
-        assert var.distribution is not None
+        assert var.distribution is not None and isinstance(var.distribution, amisc.distribution.Distribution)
         prior = var.distribution.pdf(np.asarray(denorm))
 
         if isinstance(prior, np.ndarray):
@@ -61,3 +61,17 @@ def _log_prior(self, params: dict[str, ArrayLike]) -> float:
         logp += np.log(prior)
 
     return logp
+
+def _log_posterior(system: System, params: dict[str, ArrayLike], likelihood: Callable[[System, dict[str, ArrayLike]], float]) -> float:
+
+    log_prior = _log_prior(system, params)
+
+    if not np.isfinite(log_prior):
+        return -np.inf
+
+    log_likelihood = likelihood(system, params)
+
+    if not np.isfinite(log_likelihood):
+        return -np.inf
+
+    return log_prior + log_likelihood
