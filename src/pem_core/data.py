@@ -6,19 +6,17 @@ import xarray as xr
 from pem_core.types import PathLike
 
 @dataclass
-class Field:
-    val: xr.DataArray | float
-    err: xr.DataArray | float | None = None
+class DataField:
+    val: xr.DataArray
+    err: xr.DataArray | None = None
     unit: str | None = None
 
-DataInstance = dict[str, Field]
+DataInstance = dict[str, DataField]
 
 @dataclass
 class DataEntry:
     operating_condition: dict[str, float]
     data: DataInstance
-
-Dataset = list[DataEntry]
 
 # Typed dicts for better hinting
 class QoIProps(TypedDict, total=False):
@@ -97,6 +95,7 @@ def standardize_data(
         unit_dict[new] = unit_dict.pop(old, None)
 
     # 2. Replace total flow rate and anode-cathode flow ratio with an anode mass flow rate, if necessary
+    # TODO: remove this hard-code and allow more general data tranformations of this type
     total_flow_key = "total flow rate"
     ratio_key = "anode-cathode flow ratio"
     if FLOW_RATE_KEY in operating_vars and FLOW_RATE_KEY not in df.columns:
@@ -152,6 +151,10 @@ def standardize_data(
             df[op_var] = default_value
             unit_dict[op_var] = props.get("unit", UNITS.dimensionless)
 
+    # 5. Ensure all columns have float type
+    for col in df.columns:
+        df[col] = df[col].astype(float)
+
     return df
 
 
@@ -159,7 +162,7 @@ def df_to_dataset(
         df: pd.DataFrame,
         operating_vars: dict[str, OpVarProps],
         qois: dict[str, QoIProps]
-    ) -> Dataset:
+    ) -> list[DataEntry]:
     def process_group(group: pd.DataFrame, qois) -> DataInstance:
         data_instance = {}
 
@@ -186,21 +189,20 @@ def df_to_dataset(
                 # Check that there's only one value to flag potential data curation issues.
                 df_reduced = group[df_cols].drop_duplicates()
                 assert len(df_reduced) == 1, f"Expected only one unique value for QoI '{qoi_name}' but found {len(df_reduced)}. Check the data for consistency."
-                val = float(df_reduced[qoi_name].values[0])
-                err = float(df_reduced[err_col].values[0]) if err_col in df_reduced.columns else None
-                field = Field(val=val, err=err, unit=unit_str)
+                val = xr.DataArray(df_reduced[qoi_name].values[0])
+                err = xr.DataArray(df_reduced[err_col].values[0]) if err_col in df_reduced.columns else None
             else:
                 # This should work for both 1D and 2D QoIs. xarray will automatically handle the multi-indexing for us when we set the coordinates.
                 da = group[df_cols].set_index(qoi_coords).to_xarray()
                 val, err = da[qoi_name], da[err_col] if err_col in group.columns else None
             
-            field = Field(val=val, err=err, unit=unit_str)
+            field = DataField(val=val, err=err, unit=unit_str)
             
             data_instance[qoi_name] = field
 
         return data_instance
 
-    data: Dataset = []
+    data: list[DataEntry] = []
     for opcond, group in df.groupby(list(operating_vars.keys())):
         opcond_dict = cast(dict[str, float], dict(zip(operating_vars.keys(), opcond)))
         data_instance = process_group(group, qois)
@@ -208,16 +210,35 @@ def df_to_dataset(
         
     return data
 
-def load_data(
+def load_single_dataset(
     file: PathLike,
     operating_vars: dict[str, OpVarProps],
     qois: dict[str, QoIProps],
     coords: dict[str, pint.Unit] | None = None,
     rename_map: dict[str,str] | None = None,
     unit_bracket_type: BracketType = "()"
-) -> Dataset:
-    """Load data from a CSV file and convert it into a structured Dataset format. This includes standardizing the dataframe and then converting it to a list of DataEntry objects."""
+) -> list[DataEntry]:
+    """
+    Load data from a CSV file and convert it into a structured Dataset format.
+    This includes standardizing the dataframe and then converting it to a list of DataEntry objects.
+    """
     df = pd.read_csv(file)
     df_standardized = standardize_data(df, operating_vars, qois, coords=coords, rename_map=rename_map, bracket_type=unit_bracket_type)
     dataset = df_to_dataset(df_standardized, operating_vars, qois)
     return dataset
+
+def load_multiple_datasets(
+    files: list[PathLike],
+    operating_vars: dict[str, OpVarProps],
+    qois: dict[str, QoIProps],
+    coords: dict[str, pint.Unit] | None = None,
+    rename_map: dict[str,str] | None = None,
+    unit_bracket_type: BracketType = "()"
+) -> list[DataEntry]:
+    """Load multiple datasets from a list of CSV files, unifying them into a single Dataset."""
+    # TODO: check for and unify duplicate operating conditions
+    all_data = []
+    for file in files:
+        data = load_single_dataset(file, operating_vars, qois, coords=coords, rename_map=rename_map, unit_bracket_type=unit_bracket_type)
+        all_data.extend(data)
+    return all_data

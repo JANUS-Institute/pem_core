@@ -9,22 +9,16 @@ class PEM(System):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    @staticmethod
-    def from_file(config: PathLike, output_dir=None, timestamp_prefix="pem", create_subdirs=False) -> "PEM":
+    @classmethod
+    def from_file(cls, config: PathLike, output_dir=None) -> "PEM":
         """
         Load a PEM system from a YAML config file.
         @param config: Path to the YAML config file.
         @param output_dir: Optional path to the directory where output files will be saved. If `None`, then output files will be saved in the same directory as the config file.
         @return: A `PEM` object representing the PEM.
         """
-        system = System.load_from_file(config)
-        pem = PEM(**system.__dict__)
-        pem.timestamp_prefix = timestamp_prefix
-        pem.create_subdirs = create_subdirs
-
-        # Set directory in which we'll place output files
-        if output_dir is not None:
-            pem.root_dir = output_dir
+        pem = super().load_from_file(config, root_dir=output_dir, timestamp_prefix="pem")
+        pem.__class__ = cls
 
         return pem
     
