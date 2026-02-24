@@ -1,3 +1,6 @@
+"""
+Contains utilities for loading and standardizing data from CSV files. Uses pandas and xarray to handle the required data manipulations, including unit conversions.
+"""
 import pint
 from typing import Literal, cast, TypedDict
 import pandas as pd
@@ -242,3 +245,19 @@ def load_multiple_datasets(
         data = load_single_dataset(file, operating_vars, qois, coords=coords, rename_map=rename_map, unit_bracket_type=unit_bracket_type)
         all_data.extend(data)
     return all_data
+
+def interpolate_data_instance(d1: DataInstance, d2: DataInstance) -> DataInstance:
+    """
+    Create a new DataInstance which interpolates the fields that d1 shares with d2 to the coords of d2
+    """
+    itp: DataInstance = {}
+
+    for field_name, data_field in d2.items():
+        da_sim = d1[field_name].val
+        da_data = data_field.val
+        dims_to_interp = {dim: da_data[dim] for dim in da_data.dims if da_data.sizes[dim] > 1}
+    
+        da_itp = da_sim.interp(dims_to_interp)
+        itp[field_name] = DataField(val=da_itp, err=None, unit=data_field.unit)
+
+    return itp

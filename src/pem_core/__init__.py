@@ -88,17 +88,3 @@ class PEM(System):
     
     def __call__(self, *args, **kwargs):
         return self.predict(*args, **kwargs)
-    
-
-
-def read_dlm(file: PathLike, delimiter: str | None = ',', comments='#') -> dict[str, Array]:
-    """Read a simple delimited file consisting of headers and numerical data into a dict that maps names to columns"""
-    with open(file, 'r') as fd:
-        header = fd.readline().rstrip()
-        if header.startswith(comments):
-            header = header[1:].lstrip()
-
-    col_names = header.split(delimiter)
-    table_data = np.atleast_2d(np.genfromtxt(file, skip_header=1, delimiter=delimiter))
-    columns = [table_data[:, i] for i in range(len(col_names))]
-    return {col_name: column for (col_name, column) in zip(col_names, columns)}
