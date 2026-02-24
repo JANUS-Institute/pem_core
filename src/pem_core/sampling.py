@@ -51,7 +51,7 @@ def _relative_gaussian_likelihood(x: ArrayLike, y: ArrayLike, std: float) -> tup
     # need to multiply the normal pdf by 2 (or add ln(2) to the log-pdf)
     likelihood = _gauss_logpdf_1D(distance, 0.0, std) + np.log(2)
 
-    return likelihood, distance
+    return distance, likelihood
 
 def _log_prior(system: System, params: dict[str, ArrayLike]) -> float:
     """
