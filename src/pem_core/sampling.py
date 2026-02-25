@@ -1,22 +1,24 @@
 from abc import ABC, abstractmethod
+import itertools
 import math
+import os
 from pathlib import Path
 import random
 import sys
 from typing import Callable, TypeVar
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 import pandas as pd
 
 from amisc import distribution as distributions
 from MCMCIterators.samplers import DelayedRejectionAdaptiveMetropolis
-from pem_core import PathLike, PEM, Variable
+from pem_core import ArrayLike, PathLike, PEM, Variable
 
 # Type aliases
 T = TypeVar("T", bound=np.floating)
 F = TypeVar("F", np.floating, float)
-LikelihoodType = Callable[[PEM, dict[str, ArrayLike]], float]
+LikelihoodType = Callable[[PEM, dict[str, ArrayLike], PathLike | None], float]
 
 # Constants defining output file names and column headers
 ID_HEADER = "id"
@@ -83,7 +85,7 @@ def _log_prior(pem: PEM, params: dict[str, ArrayLike]) -> float:
 
     return logp
 
-def _log_posterior(pem: PEM, params: dict[str, ArrayLike], likelihood: LikelihoodType) -> float:
+def _log_posterior(pem: PEM, params: dict[str, ArrayLike], likelihood: LikelihoodType, stats: dict) -> float:
     """
     Compute the log posterior distribution by adding the log-prior distribution of the PEM and user-provided log-likelihood distribution.
     Returns -inf if either evaluate to something non-finite.
@@ -93,7 +95,7 @@ def _log_posterior(pem: PEM, params: dict[str, ArrayLike], likelihood: Likelihoo
     if not np.isfinite(log_prior):
         return -np.inf
 
-    log_likelihood = likelihood(pem, params)
+    log_likelihood = likelihood(pem, params, stats["current_sample_dir"])
 
     if not np.isfinite(log_likelihood):
         return -np.inf
@@ -106,8 +108,6 @@ class Sampler(ABC):
         pem: PEM,
         sample_vars: list[Variable],
         base_vars: dict[Variable, str],
-        data,
-        opts,
         log_likelihood: LikelihoodType,
         stream = sys.stdout,
         output_dir: PathLike | None = None,
@@ -117,17 +117,9 @@ class Sampler(ABC):
         self.pem = pem
         self.sample_vars = sample_vars
         self.base_vars = base_vars
-        self.data = data
-        self.opts = opts
         self.init_sample_file = init_sample_file
         self.init_cov_file = init_cov_file
         self.variable_names = [v.name for v in self.sample_vars]
-        self.logpdf = lambda x: _log_posterior(pem, dict(zip(self.variable_names, x)), log_likelihood)
-
-        # Output files
-        self.stream = stream
-        self.output_dir = output_dir
-        self.output_delimiter = ","
 
         # Sampler stats
         self.current_logpdf = -np.inf
@@ -140,17 +132,38 @@ class Sampler(ABC):
         self.sample_num = 0
         self.p_accept = 0.0
 
+        # Output files
+        self.stream = stream
+        self.output_dir = output_dir
+        self.output_delimiter = ","
+
         # Create sample file if requested
         if self.output_dir is not None:
             self.output_dir = Path(self.output_dir)
             self.sample_file = self.output_dir / SAMPLE_FILE 
+
             print(f"Creating log file at {self.sample_file}")
-    
             header_cols = [ID_HEADER] + self.variable_names + [LOGPDF_HEADER, ACCEPT_HEADER]
             header = self.output_delimiter.join(header_cols)
 
             with open(self.sample_file, "w") as fd:
                 print(header, file=fd)
+
+            self.sample_dir = self.output_dir / "samples"
+            os.mkdir(self.sample_dir)
+        else:
+            self.sample_dir = None
+            self.sample_file = None
+
+        # Logpdf
+        self.sampler_dict = dict(current_sample_dir=self._current_sample_dir(), stream=self.stream)
+        self.logpdf = lambda x: _log_posterior(pem, dict(zip(self.variable_names, x)), log_likelihood, self.sampler_dict)
+
+    def _current_sample_dir(self):
+        if self.sample_dir is None:
+            return None
+        else:
+            return self.sample_dir / f"{self.sample_num:06d}"
 
     def log_to_screen(self):
         print(
@@ -175,7 +188,9 @@ class Sampler(ABC):
         df.to_csv(Path(self.output_dir) / COV_FILE, index=False)
 
     def initial_sample(self):
-        # Read initial sample from file or create it using the nominal values in the base_vars dict
+        """
+        Read initial sample from file or create it using the nominal values in the base_vars dict
+        """
         if self.init_sample_file is None:
             print("Constructing initial sample from variable nominal values")
             sample = np.array([self.base_vars[p] for p in self.sample_vars])
@@ -186,6 +201,9 @@ class Sampler(ABC):
         return sample
 
     def initial_cov(self):
+        """
+        Read a starting covariance matrix from a file or create it using distributions of the calibration variables.
+        """
         if self.init_cov_file is None:
             print("Constructing initial covariance matrix from variable distributions")
             # Construct a diagonal covariance matrix based on the prior distributions of the variables
@@ -227,6 +245,10 @@ class Sampler(ABC):
         return np.linalg.cholesky(cov)
 
     def update_stats(self, sample, logp, accepted):
+        """
+        Update and log sampler stats, including acceptance percentage and the best sample so far.
+        If requested, writes sample and covariance files, as well as logs a summary to the screen.
+        """
         if logp > self.current_logpdf:
             self.best_logpdf, self.best_sample = logp, sample
 
@@ -234,6 +256,7 @@ class Sampler(ABC):
             self.accept_num += 1
         
         self.sample_num += 1
+        self.sampler_dict["current_sample_dir"] = self._current_sample_dir()
         self.p_accept = float(self.accept_num) / float(self.sample_num)
         self.current_sample, self.current_logpdf, self.accepted = sample, logp, accepted
 
@@ -244,9 +267,7 @@ class Sampler(ABC):
             self.write_files()
 
     def cov(self):
-        """
-        Convert covariance matrix from lower-triangular Cholesky form to full form on request
-        """
+        """Convert covariance matrix from lower-triangular Cholesky form to full form on request"""
         return self.current_cov @ self.current_cov.T
 
     @abstractmethod
@@ -260,6 +281,9 @@ class Sampler(ABC):
         sample, logp, accepted = self.propose_sample()
         self.update_stats(sample, logp, accepted)
         return sample, logp, accepted
+
+    def sample(self, num_samples: int) -> list[tuple[ArrayLike, float, bool]]:
+        return [s for s in itertools.islice(self, num_samples)]
 
 class PriorSampler(Sampler):
     """
@@ -310,9 +334,7 @@ class PreviousRunSampler(Sampler):
         return sample, logp, np.isfinite(logp)
 
 class DRAMSampler(Sampler):
-    """
-    Samples using delayed rejection adaptive metropolis
-    """
+    """Samples using the Delayed Rejection Adaptive Metropolis (DRAM) algorithm"""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -324,5 +346,4 @@ class DRAMSampler(Sampler):
         self.update_stats(self.sampler.current_sample, self.sampler.current_logpdf, self.sampler.accept_num > 0)
 
     def propose_sample(self):
-        print("Here")
         return self.sampler.__next__()

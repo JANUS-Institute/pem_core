@@ -3,10 +3,12 @@ Contains utilities for loading and standardizing data from CSV files. Uses panda
 """
 import pint
 from typing import Literal, cast, TypedDict
-import pandas as pd
 from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
 import xarray as xr
-from pem_core.types import PathLike
+from pem_core.types import PathLike, NDArray
 
 @dataclass
 class DataField:
@@ -247,17 +249,50 @@ def load_multiple_datasets(
     return all_data
 
 def interpolate_data_instance(d1: DataInstance, d2: DataInstance) -> DataInstance:
-    """
-    Create a new DataInstance which interpolates the fields that d1 shares with d2 to the coords of d2
-    """
+    """Interpolate d1 onto the coordinates of d2, keeping only the fields which they have in common."""
     itp: DataInstance = {}
 
     for field_name, data_field in d2.items():
-        da_sim = d1[field_name].val
-        da_data = data_field.val
-        dims_to_interp = {dim: da_data[dim] for dim in da_data.dims if da_data.sizes[dim] > 1}
-    
-        da_itp = da_sim.interp(dims_to_interp)
-        itp[field_name] = DataField(val=da_itp, err=None, unit=data_field.unit)
+        if field_name in d1:
+            da_sim = d1[field_name].val
+            da_data = data_field.val
+            dims_to_interp = {dim: da_data[dim] for dim in da_data.dims if da_data.sizes[dim] > 1}
+        
+            da_itp = da_sim.interp(dims_to_interp)
+            itp[field_name] = DataField(val=da_itp, err=None, unit=data_field.unit)
 
     return itp
+
+def get_field_names(arr: list[DataInstance] | list[DataEntry]) -> set[str]:
+    """Extract all of the data fields present in a list of DataEntry or DataInstance objects."""
+    field_names = set()
+    for instance in arr:
+        if isinstance(instance, DataEntry):
+            field_names.update(instance.data.keys())
+        else:
+            field_names.update(instance.keys())
+    return field_names
+
+def extract_data_arrays(arr: list[DataInstance] | list[DataEntry]) -> dict[str, tuple[NDArray, NDArray]]:
+    """
+    Concatenate the outputs across all instances in `arr` into a single 1-D array per field.
+    Returns a dictionary mapping field names to (value, error) tuples of arrays.
+    """
+    field_names = get_field_names(arr)
+
+    output: dict[str, tuple[NDArray, NDArray]] = {}
+
+    for field_name in field_names:
+        vec = []
+        err = []
+
+        for entry in arr:
+            instance = entry.data if isinstance(entry, DataEntry) else entry
+            if field_name in instance.keys():
+                field = instance[field_name]
+                vec.append(field.val.values.flatten())
+                err.append(field.err.values.flatten() if field.err is not None else np.full_like(vec[-1], np.nan))
+
+        output[field_name] = np.concatenate(vec), np.concatenate(err)
+
+    return output

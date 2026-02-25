@@ -1,4 +1,4 @@
-from .types import ArrayLike, PathLike, Array
+from .types import ArrayLike, PathLike
 from amisc import System, Variable, Component
 from typing import Literal
 import numpy as np
