@@ -1,3 +1,24 @@
+"""
+Bayesian sampling tools for PEM (Predictive Engineering Model) calibration.
+
+Provides utilities for Markov Chain Monte Carlo (MCMC)-based inference over
+PEM input parameters, including:
+
+- Log-likelihood helpers: Gaussian 1D log-PDF and relative L2-norm-based
+  likelihood functions for comparing model output to observations.
+- Log-posterior computation: combines a prior (from variable distributions
+  defined in the PEM) with a user-supplied log-likelihood function.
+- Sampler base class (`Sampler`): abstract iterator that manages sample
+  state, acceptance tracking, file I/O (CSV sample log and Cholesky
+  covariance), and screen logging. Supports warm-starting from previous
+  runs via `init_sample_file` and `init_cov_file`.
+- Concrete samplers:
+    - `PriorSampler`: draws independent samples from the prior distribution.
+    - `PreviousRunSampler`: resamples (with replacement) from accepted
+      samples of a prior MCMC run, useful for certain workflows.
+    - `DRAMSampler`: uses the Delayed Rejection Adaptive Metropolis (DRAM)
+      algorithm for efficient posterior exploration.
+"""
 from abc import ABC, abstractmethod
 import itertools
 import math
