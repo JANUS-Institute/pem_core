@@ -60,24 +60,36 @@ class DataEntry:
 class QoIProps(TypedDict, total=False):
     """Configuration for a quantity of interest (QoI).
 
-    `unit` is the target unit after standardization. `coords` lists the names
-    of coordinate columns (e.g. ``("axial position",)``) for field quantities;
-    omit for scalar QoIs.
+    `unit` is the target unit after standardization; accepts either a
+    ``pint.Unit`` object or a plain string (e.g. ``"mN"``). `coords` lists
+    the names of coordinate columns (e.g. ``("axial position",)``) for field
+    quantities; omit for scalar QoIs.
     """
-    unit: pint.Unit
+    unit: pint.Unit | str
     coords: tuple[str, ...]
 
 class OpVarProps(TypedDict, total=False):
     """Configuration for an operating variable.
 
-    `unit` is the target unit after standardization. `default` is used to fill
-    in the column when it is absent from a CSV file.
+    `unit` is the target unit after standardization; accepts either a
+    ``pint.Unit`` object or a plain string (e.g. ``"V"``). `default` is used
+    to fill in the column when it is absent from a CSV file.
     """
-    unit: pint.Unit
+    unit: pint.Unit | str
     default: float
 
 # Load pint unit registry and define any custom units we need
 UNITS = pint.UnitRegistry()
+
+# The base unit "torr" in pint is lowercase. This gives an uppercase version.
+UNITS.define("Torr = 1 torr = Torr")
+
+def _parse_unit(u: pint.Unit | str | None) -> pint.Unit | None:
+    """Coerce a unit string or pint.Unit to a pint.Unit, or return None."""
+    if u is None or isinstance(u, pint.Unit):
+        return u
+    assert isinstance(u, str)
+    return UNITS.parse_units(u)
 
 BracketType = Literal['()', '[]', '{}']
 
@@ -92,20 +104,13 @@ def _split_name_and_unit(key, bracket_type: BracketType = '()'):
     unit = key[bracket_ind+1:key.find(right, bracket_ind)].strip()
     return name, UNITS.parse_units(unit)
 
-def _format_col_name(name, unit, casefold=False, bracket_type: BracketType = '()'):
-    left, right = bracket_type
-    name_formatted = name.casefold() if casefold else name
-    if unit is None or unit == UNITS.dimensionless:
-        return name_formatted
-    return f"{name_formatted} {left}{unit:~P}{right}"
-
 FLOW_RATE_KEY = "anode mass flow rate"
 
 def _standardize_data(
         df: pd.DataFrame,
         operating_vars: dict[str, OpVarProps],
         qois: dict[str, QoIProps],
-        coords: dict[str, pint.Unit] | None = None,
+        coords: dict[str, pint.Unit | str] | None = None,
         rename_map: dict[str,str] | None = None,
         bracket_type: BracketType = "()"
     ) -> pd.DataFrame:
@@ -169,15 +174,15 @@ def _standardize_data(
         if col.endswith(" uncertainty"):
             parent = col[: -len(" uncertainty")].strip()
             if parent in qois:
-                expected_unit = qois[parent].get("unit", UNITS.dimensionless)
+                expected_unit = _parse_unit(qois[parent].get("unit", UNITS.dimensionless))
             else:
                 continue
         elif col in operating_vars:
-            expected_unit = operating_vars[col].get("unit", UNITS.dimensionless)
+            expected_unit = _parse_unit(operating_vars[col].get("unit", UNITS.dimensionless))
         elif col in qois:
-            expected_unit = qois[col].get("unit", UNITS.dimensionless)
+            expected_unit = _parse_unit(qois[col].get("unit", UNITS.dimensionless))
         elif coords is not None and col in coords:
-            expected_unit = coords[col]
+            expected_unit = _parse_unit(coords[col])
         else:
             continue
         if unit is not None and expected_unit is not None and unit != expected_unit:
@@ -201,7 +206,7 @@ def _standardize_data(
             if default_value is None:
                 raise ValueError(f"Missing required operating variable '{op_var}' and no default value specified in operating_vars.")
             df[op_var] = default_value
-            unit_dict[op_var] = props.get("unit", UNITS.dimensionless)
+            unit_dict[op_var] = _parse_unit(props.get("unit", UNITS.dimensionless))
 
     # 5. Ensure all columns have float type
     for col in df.columns:
@@ -224,7 +229,7 @@ def _df_to_dataset(
 
             # Extract coordinates and units for this QoI.
             qoi_coords = list(props.get("coords", ()))
-            unit = props.get("unit", None)
+            unit = _parse_unit(props.get("unit", None))
             unit_str = f"{unit:~P}" if unit is not None else ""
             
             # Assemble list of columns we'll extract from the dataframe for this QoI.
@@ -273,7 +278,7 @@ def load_single_dataset(
     file: PathLike,
     operating_vars: dict[str, OpVarProps],
     qois: dict[str, QoIProps],
-    coords: dict[str, pint.Unit] | None = None,
+    coords: dict[str, pint.Unit | str] | None = None,
     rename_map: dict[str,str] | None = None,
     unit_bracket_type: BracketType = "()"
 ) -> list[DataEntry]:
@@ -294,7 +299,7 @@ def load_multiple_datasets(
     files: list[PathLike],
     operating_vars: dict[str, OpVarProps],
     qois: dict[str, QoIProps],
-    coords: dict[str, pint.Unit] | None = None,
+    coords: dict[str, pint.Unit | str] | None = None,
     rename_map: dict[str,str] | None = None,
     unit_bracket_type: BracketType = "()"
 ) -> list[DataEntry]:

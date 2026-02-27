@@ -11,7 +11,6 @@ from pem_core.data import (
     DataEntry,
     DataField,
     _df_to_dataset,
-    _format_col_name,
     _split_name_and_unit,
     _standardize_data,
     extract_data_arrays,
@@ -75,35 +74,6 @@ class TestSplitNameAndUnit:
         name, unit = _split_name_and_unit("Thrust {mN}", bracket_type="{}")
         assert name == "Thrust"
         assert unit == UNITS.millinewton
-
-
-# ── _format_col_name ─────────────────────────────────────────────────────────
-
-class TestFormatColName:
-    def test_basic(self):
-        assert _format_col_name("Thrust", UNITS.millinewton) == "Thrust (mN)"
-
-    def test_no_unit(self):
-        assert _format_col_name("Thrust", None) == "Thrust"
-
-    def test_dimensionless(self):
-        assert _format_col_name("Efficiency", UNITS.dimensionless) == "Efficiency"
-
-    def test_casefold(self):
-        assert _format_col_name("Thrust", UNITS.millinewton, casefold=True) == "thrust (mN)"
-
-    def test_square_brackets(self):
-        assert _format_col_name("Thrust", UNITS.millinewton, bracket_type="[]") == "Thrust [mN]"
-
-    def test_round_trip(self):
-        """_format_col_name and _split_name_and_unit should be inverses of each other."""
-        name = "Ion velocity"
-        unit = UNITS.meter / UNITS.second
-        formatted = _format_col_name(name, unit)
-        recovered_name, recovered_unit = _split_name_and_unit(formatted)
-        assert recovered_name == name
-        assert recovered_unit == unit
-
 
 # ── _standardize_data ────────────────────────────────────────────────────────
 
@@ -658,3 +628,99 @@ class TestInterpolateDataInstance:
         result = interpolate_data_instance(d1, d2)
         assert "thrust" in result
         assert float(result["thrust"].val.values) == pytest.approx(10.0)
+
+
+# ── string unit support ───────────────────────────────────────────────────────
+
+class TestStringUnits:
+    """Verify that plain strings are accepted wherever pint.Unit objects are."""
+
+    def test_standardize_data_string_unit_conversion(self):
+        """String units in qois and operating_vars trigger the same conversion as pint.Unit."""
+        df = pd.DataFrame({"Thrust (mN)": [100.0], "Discharge Voltage (V)": [300.0], "Mass Flow Rate (mg/s)": [4.0]})
+        result = _standardize_data(
+            df,
+            operating_vars={
+                "discharge voltage": {"unit": "V"},
+                "mass flow rate": {"unit": "mg/s"},
+            },
+            qois={"thrust": {"unit": "N"}},  # mN → N
+        )
+        assert math.isclose(result["thrust"].iloc[0], 0.1)
+
+    def test_standardize_data_string_unit_no_pint_import_needed(self):
+        """A user who never imports pint can still get unit conversion."""
+        df = pd.DataFrame({"T (mN)": [50.0], "Vd (V)": [200.0]})
+        result = _standardize_data(
+            df,
+            operating_vars={"vd": {"unit": "V"}},
+            qois={"t": {"unit": "mN"}},
+            rename_map={"t": "t", "vd": "vd"},
+        )
+        assert math.isclose(result["t"].iloc[0], 50.0)
+
+    def test_df_to_dataset_unit_string_stored_on_field(self):
+        """String unit passed via qois is formatted and stored on DataField.unit."""
+        df = pd.DataFrame({
+            "discharge voltage": [300.0],
+            "mass flow rate": [4.0],
+            "thrust": [10.0],
+        })
+        entries = _df_to_dataset(
+            df,
+            {"discharge voltage": {}, "mass flow rate": {}},
+            qois={"thrust": {"unit": "mN"}},
+        )
+        assert entries[0].data["thrust"].unit == "mN"
+
+    def test_load_single_dataset_string_units_end_to_end(self, tmp_path):
+        """load_single_dataset works without importing pint at the call site."""
+        f = tmp_path / "data.csv"
+        f.write_text(
+            "Discharge Voltage (V),Mass Flow Rate (mg/s),Thrust (mN)\n"
+            "300.0,4.0,100.0\n"
+        )
+        entries = load_single_dataset(
+            f,
+            operating_vars={
+                "discharge voltage": {"unit": "V"},
+                "mass flow rate": {"unit": "mg/s"},
+            },
+            qois={"thrust": {"unit": "N"}},  # mN → N
+        )
+        val = float(entries[0].data["thrust"].val.values)
+        assert math.isclose(val, 0.1)
+
+    def test_string_unit_with_default_op_var(self):
+        """String unit in an op-var that supplies a default value still converts correctly."""
+        df = pd.DataFrame({"thrust (mN)": [100.0], "discharge voltage (V)": [300.0]})
+        result = _standardize_data(
+            df,
+            operating_vars={
+                "discharge voltage": {"unit": "V"},
+                "background pressure": {"unit": "Pa", "default": 1e-5},
+            },
+            qois={"thrust": {"unit": "mN"}},
+        )
+        assert "background pressure" in result.columns
+        assert math.isclose(result["background pressure"].iloc[0], 1e-5)
+
+    def test_string_unit_coords(self, tmp_path):
+        """String units in the coords dict are parsed correctly."""
+        df = pd.DataFrame({
+            "discharge voltage": [300.0] * 3,
+            "mass flow rate": [4.0] * 3,
+            "axial position (cm)": [0.0, 1.0, 2.0],
+            "ion velocity": [500.0, 600.0, 700.0],
+        })
+        result = _standardize_data(
+            df,
+            operating_vars={
+                "discharge voltage": {"unit": "V"},
+                "mass flow rate": {"unit": "mg/s"},
+            },
+            qois={"ion velocity": {"coords": ("axial position",)}},
+            coords={"axial position": "m"},  # cm → m
+        )
+        # 0, 1, 2 cm → 0, 0.01, 0.02 m
+        assert math.isclose(result["axial position"].iloc[1], 0.01)

@@ -8,7 +8,7 @@ Core library for the Predictive Engineering Model (PEM) developed for the [NASA 
 
 ## Installation
 
-Requires Python >= 3.11 and the sibling `amisc` package (resolved as an editable local dependency).
+Requires Python >= 3.11.
 
 ```bash
 pip install -e .
@@ -71,23 +71,21 @@ Below is a schematic example outlining all the major parts of using the PEM to c
 See the [HallThrusterPEM repo](https://github.com/JANUS-Institute/HallThrusterPEM) for a real-world example.
 
 ```python
-import pint
 from pem_core import PEM
 from pem_core.data import load_single_dataset
 from pem_core.sampling import DRAMSampler, relative_gaussian_likelihood
 
-UNITS = pint.UnitRegistry()
-
 # 1. Load experimental data and declare which variables we treat as operating variables.
 # Specifying units allows us to auto-convert columns.
+# Units can be plain strings or pint.Unit objects — no need to import pint.
 # See pem_core/data.py for a description of our data processing methodology.
 operating_vars = {
-    "discharge voltage": {"unit": UNITS.volt},
-    "anode mass flow rate": {"unit": UNITS.milligram / UNITS.second},
+    "discharge voltage": {"unit": "V"},
+    "anode mass flow rate": {"unit": "mg/s"},
 }
 
 # Declare that we're looking for thrust
-qois = {"thrust": {"unit": UNITS.millinewton}}
+qois = {"thrust": {"unit": "mN"}}
 
 dataset = load_single_dataset("experiment.csv", operating_vars, qois)
 
