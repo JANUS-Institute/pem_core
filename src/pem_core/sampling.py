@@ -201,7 +201,7 @@ class Sampler(ABC):
         # Write log file
         id_str = f"{self.sample_num - 1:06d}"
         with open(self.sample_file, "a") as fd:
-            row = [id_str] + [f"{s}" for s in self.current_sample] + [f"{self.current_logpdf}", f'{self.accepted}']
+            row = [id_str] + [f"{s}" for s in self.current_sample] + [f"{self.current_logpdf}", f'{int(self.accepted)}']
             print(self.output_delimiter.join(row), file=fd)
 
         # Write covariance matrix
