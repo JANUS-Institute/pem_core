@@ -115,15 +115,17 @@ def _standardize_data(
     - Ensuring column names are consistent (e.g. case-insensitive matching, ignoring units in parentheses when matching column names).
     """
     df = df.copy()
+    if rename_map is not None:
+        rename_map = {k.casefold(): v.casefold() for k, v in rename_map.items()}
 
     # 1. Strip units from column names and save them in a separate dict so we can convert units later
-    #    Also rename columns and casefold for consistent matching. 
+    #    Also rename columns and casefold for consistent matching.
     unit_dict = {}
     for col in df.columns:
         name, unit = _split_name_and_unit(col, bracket_type=bracket_type)
         name_cf = name.casefold()
         if rename_map is not None and name_cf in rename_map:
-            name_cf = rename_map[name_cf].casefold()
+            name_cf = rename_map[name_cf]
         unit_dict[name_cf] = unit
         df.rename(columns={col: name_cf}, inplace=True)
 
@@ -238,7 +240,11 @@ def _df_to_dataset(
                 # If there are no coordinates, we just want to extract the value as a scalar and wrap it in a DataArray with a dummy dimension so we can keep the same Field structure.
                 # Check that there's only one value to flag potential data curation issues.
                 df_reduced = group[df_cols].drop_duplicates()
-                assert len(df_reduced) == 1, f"Expected only one unique value for QoI '{qoi_name}' but found {len(df_reduced)}. Check the data for consistency."
+                if len(df_reduced) != 1:
+                    raise ValueError(
+                        f"Expected only one unique value for QoI '{qoi_name}' "
+                        f"but found {len(df_reduced)}. Check the data for consistency."
+                    )
                 val = xr.DataArray(df_reduced[qoi_name].values[0])
                 err = xr.DataArray(df_reduced[err_col].values[0]) if err_col in df_reduced.columns else None
             else:
@@ -345,7 +351,7 @@ def extract_data_arrays(arr: list[DataInstance] | list[DataEntry]) -> dict[str, 
 
     output: dict[str, tuple[NDArray, NDArray]] = {}
 
-    for field_name in field_names:
+    for field_name in sorted(field_names):
         vec = []
         err = []
 

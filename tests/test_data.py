@@ -306,6 +306,22 @@ class TestStandardizeData:
         assert list(df.columns) == original_columns
         assert df["Thrust (mN)"].tolist() == original_values
 
+    def test_rename_map_keys_are_case_insensitive(self):
+        """rename_map should match regardless of key capitalisation."""
+        df = pd.DataFrame({"Vd (V)": [300.0], "Mdot (mg/s)": [4.0], "T (mN)": [10.0]})
+        result = _standardize_data(
+            df,
+            operating_vars={
+                "discharge voltage": {"unit": UNITS.volt},
+                "mass flow rate": {"unit": UNITS.mg / UNITS.s},
+            },
+            qois={"thrust": {"unit": UNITS.millinewton}},
+            # Mixed-case keys — previously these were silently ignored
+            rename_map={"VD": "discharge voltage", "MDOT": "mass flow rate", "T": "thrust"},
+        )
+        assert "discharge voltage" in result.columns
+        assert "thrust" in result.columns
+
 
 # ── _df_to_dataset ───────────────────────────────────────────────────────────
 
@@ -414,6 +430,16 @@ class TestDfToDataset:
         assert len(entries) == 2
         voltages = {e.operating_condition["discharge voltage"] for e in entries}
         assert voltages == {300.0, 400.0}
+
+    def test_duplicate_scalar_value_raises(self):
+        """Two different thrust values under the same operating condition is a data error."""
+        df = pd.DataFrame({
+            "discharge voltage": [300.0, 300.0],
+            "mass flow rate": [4.0, 4.0],
+            "thrust": [10.0, 99.0],  # contradictory values at same condition
+        })
+        with pytest.raises(ValueError, match="thrust"):
+            _df_to_dataset(df, self.OP_VARS, qois={"thrust": {}})
 
 
 # ── load_single_dataset ──────────────────────────────────────────────────────
@@ -573,6 +599,18 @@ class TestExtractDataArrays:
         result = extract_data_arrays(instances)
         vals, _ = result["thrust"]
         assert len(vals) == 2
+
+    def test_output_keys_are_sorted(self):
+        """Key order must be deterministic (alphabetical) regardless of insertion order."""
+        entries = [
+            DataEntry({"v": 300.0, "m": 4.0}, {
+                "thrust": scalar_field(10.0),
+                "efficiency": scalar_field(0.5),
+                "ion current": scalar_field(2.0),
+            }),
+        ]
+        result = extract_data_arrays(entries)
+        assert list(result.keys()) == sorted(result.keys())
 
 
 # ── interpolate_data_instance ─────────────────────────────────────────────────
