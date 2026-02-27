@@ -1,5 +1,25 @@
 """
-Contains utilities for loading and standardizing data from CSV files. Uses pandas and xarray to handle the required data manipulations, including unit conversions.
+Utilities for loading and standardizing experimental data from CSV files.
+
+Data is organized around the concept of an *operating condition* — a unique
+combination of values for the operating variables (e.g. discharge voltage,
+mass flow rate). Each operating condition produces one `DataEntry`, which
+contains one `DataField` per quantity of interest (QoI). Scalar QoIs are
+stored as 0-D xarray DataArrays; spatially-resolved field quantities (e.g.
+plasma profiles) are stored as 1-D or 2-D DataArrays indexed by their
+coordinate dimensions.
+
+Typical workflow:
+
+    1. Declare ``operating_vars`` and ``qois`` dicts that specify the expected
+       column names, target units, and (for fields) coordinate names.
+    2. Call `load_single_dataset` or `load_multiple_datasets` to read one or
+       more CSV files. Column names are matched case-insensitively; units
+       embedded in headers (e.g. ``"Thrust (mN)"``) are parsed and converted
+       automatically.
+    3. Use `interpolate_data_instance` to compare simulation output to
+       observations on a common grid, and `extract_data_arrays` to flatten
+       the structured data into plain NumPy arrays for use in a likelihood.
 """
 import pint
 from typing import Literal, cast, TypedDict
@@ -12,23 +32,47 @@ from pem_core.types import PathLike, NDArray
 
 @dataclass
 class DataField:
+    """A single measured or simulated quantity at one operating condition.
+
+    `val` and `err` are xarray DataArrays so that both scalar quantities (0-D)
+    and spatially-resolved field quantities (1-D or 2-D, indexed by coordinate
+    dimensions such as axial position) are handled uniformly.
+    """
     val: xr.DataArray
-    err: xr.DataArray | None = None
+    err: xr.DataArray | None = None  # measurement uncertainty; None if not provided
     unit: str | None = None
 
+# Maps QoI name → DataField for a single operating condition
 DataInstance = dict[str, DataField]
 
 @dataclass
 class DataEntry:
+    """Experimental data at a single operating condition.
+
+    `operating_condition` holds the values of all operating variables (e.g.
+    discharge voltage, mass flow rate) that define this point, and `data` maps
+    each QoI name to its corresponding `DataField`.
+    """
     operating_condition: dict[str, float]
     data: DataInstance
 
 # Typed dicts for better hinting
 class QoIProps(TypedDict, total=False):
+    """Configuration for a quantity of interest (QoI).
+
+    `unit` is the target unit after standardization. `coords` lists the names
+    of coordinate columns (e.g. ``("axial position",)``) for field quantities;
+    omit for scalar QoIs.
+    """
     unit: pint.Unit
     coords: tuple[str, ...]
 
 class OpVarProps(TypedDict, total=False):
+    """Configuration for an operating variable.
+
+    `unit` is the target unit after standardization. `default` is used to fill
+    in the column when it is absent from a CSV file.
+    """
     unit: pint.Unit
     default: float
 
@@ -37,7 +81,7 @@ UNITS = pint.UnitRegistry()
 
 BracketType = Literal['()', '[]', '{}']
 
-def split_name_and_unit(key, bracket_type: BracketType = '()'):
+def _split_name_and_unit(key, bracket_type: BracketType = '()'):
     """Given a string like 'Axial ion velocity (m/s)', split it into the name and the unit. The unit is optional, so if we have something like 'Thrust', then we should just return the name and None for the unit."""
     left,right = bracket_type
     bracket_ind = key.find(left)
@@ -48,7 +92,7 @@ def split_name_and_unit(key, bracket_type: BracketType = '()'):
     unit = key[bracket_ind+1:key.find(right, bracket_ind)].strip()
     return name, UNITS.parse_units(unit)
 
-def format_col_name(name, unit, casefold=False, bracket_type: BracketType = '()'):
+def _format_col_name(name, unit, casefold=False, bracket_type: BracketType = '()'):
     left, right = bracket_type
     name_formatted = name.casefold() if casefold else name
     if unit is None or unit == UNITS.dimensionless:
@@ -57,7 +101,7 @@ def format_col_name(name, unit, casefold=False, bracket_type: BracketType = '()'
 
 FLOW_RATE_KEY = "anode mass flow rate"
 
-def standardize_data(
+def _standardize_data(
         df: pd.DataFrame,
         operating_vars: dict[str, OpVarProps],
         qois: dict[str, QoIProps],
@@ -70,11 +114,13 @@ def standardize_data(
     - Adding any missing operating condition columns with default values so that we have a complete set of operating conditions for each row.
     - Ensuring column names are consistent (e.g. case-insensitive matching, ignoring units in parentheses when matching column names).
     """
+    df = df.copy()
+
     # 1. Strip units from column names and save them in a separate dict so we can convert units later
     #    Also rename columns and casefold for consistent matching. 
     unit_dict = {}
     for col in df.columns:
-        name, unit = split_name_and_unit(col, bracket_type=bracket_type)
+        name, unit = _split_name_and_unit(col, bracket_type=bracket_type)
         name_cf = name.casefold()
         if rename_map is not None and name_cf in rename_map:
             name_cf = rename_map[name_cf].casefold()
@@ -142,7 +188,6 @@ def standardize_data(
         if col.endswith(" uncertainty"):
             parent = col[: -len(" uncertainty")].strip()
             # TODO: do we need this line?
-            # original_col = next((c for c in df.columns if c == f"{parent} relative uncertainty"), None)
             # Check if this was originally relative (we can track this with a set)
             if col in relative_uncertainty_cols:  # track during rename step above
                 df[col] = df[col] * df[parent]
@@ -163,7 +208,7 @@ def standardize_data(
     return df
 
 
-def df_to_dataset(
+def _df_to_dataset(
         df: pd.DataFrame,
         operating_vars: dict[str, OpVarProps],
         qois: dict[str, QoIProps]
@@ -209,6 +254,9 @@ def df_to_dataset(
 
     data: list[DataEntry] = []
     for opcond, group in df.groupby(list(operating_vars.keys())):
+        # pandas returns a scalar (not a 1-tuple) when groupby has a single key
+        if not isinstance(opcond, tuple):
+            opcond = (opcond,)
         opcond_dict = cast(dict[str, float], dict(zip(operating_vars.keys(), opcond)))
         data_instance = process_group(group, qois)
         data.append(DataEntry(operating_condition=opcond_dict, data=data_instance))
@@ -223,13 +271,17 @@ def load_single_dataset(
     rename_map: dict[str,str] | None = None,
     unit_bracket_type: BracketType = "()"
 ) -> list[DataEntry]:
-    """
-    Load data from a CSV file and convert it into a structured Dataset format.
-    This includes standardizing the dataframe and then converting it to a list of DataEntry objects.
+    """Load a CSV file and return one `DataEntry` per unique operating condition.
+
+    Column names are matched case-insensitively. Units embedded in column
+    headers (e.g. ``"Thrust (mN)"``) are parsed and converted to the target
+    units declared in `qois` / `operating_vars`. Use `rename_map` to alias
+    column names that differ from the expected keys, and `coords` to declare
+    the units of any coordinate columns used by field QoIs.
     """
     df = pd.read_csv(file)
-    df_standardized = standardize_data(df, operating_vars, qois, coords=coords, rename_map=rename_map, bracket_type=unit_bracket_type)
-    dataset = df_to_dataset(df_standardized, operating_vars, qois)
+    df_standardized = _standardize_data(df, operating_vars, qois, coords=coords, rename_map=rename_map, bracket_type=unit_bracket_type)
+    dataset = _df_to_dataset(df_standardized, operating_vars, qois)
     return dataset
 
 def load_multiple_datasets(
@@ -240,7 +292,12 @@ def load_multiple_datasets(
     rename_map: dict[str,str] | None = None,
     unit_bracket_type: BracketType = "()"
 ) -> list[DataEntry]:
-    """Load multiple datasets from a list of CSV files, unifying them into a single Dataset."""
+    """Load and merge multiple CSV files into a single flat list of `DataEntry` objects.
+
+    Each file is processed independently via `load_single_dataset` and the
+    results are concatenated. All files must share the same `operating_vars`
+    and `qois` schema.
+    """
     # TODO: check for and unify duplicate operating conditions
     all_data = []
     for file in files:
@@ -249,7 +306,12 @@ def load_multiple_datasets(
     return all_data
 
 def interpolate_data_instance(d1: DataInstance, d2: DataInstance) -> DataInstance:
-    """Interpolate d1 onto the coordinates of d2, keeping only the fields which they have in common."""
+    """Interpolate `d1` onto the coordinate grid of `d2`.
+
+    Useful for comparing simulation output (`d1`) to observations (`d2`) when
+    they live on different grids. Only fields present in both instances are
+    returned; the result carries no uncertainty (`err=None`).
+    """
     itp: DataInstance = {}
 
     for field_name, data_field in d2.items():
@@ -274,9 +336,10 @@ def get_field_names(arr: list[DataInstance] | list[DataEntry]) -> set[str]:
     return field_names
 
 def extract_data_arrays(arr: list[DataInstance] | list[DataEntry]) -> dict[str, tuple[NDArray, NDArray]]:
-    """
-    Concatenate the outputs across all instances in `arr` into a single 1-D array per field.
-    Returns a dictionary mapping field names to (value, error) tuples of arrays.
+    """Flatten all entries in `arr` into a pair of 1-D arrays per field.
+
+    Returns ``{field_name: (values, errors)}`` where each array concatenates
+    values across all operating conditions. Missing errors are filled with NaN.
     """
     field_names = get_field_names(arr)
 

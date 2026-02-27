@@ -1,6 +1,6 @@
 # pem_core
 
-Core library for the Predictive Engineering Model (PEM) developed for the [JANUS institute](https://januselectricpropulsion.com/).
+Core library for the Predictive Engineering Model (PEM) developed for the [NASA JANUS STRI](https://januselectricpropulsion.com/).
 
 `pem_core` wraps the [`amisc`](https://github.com/eckelsjd/amisc) `System` framework to construct physics-based models of electric propulsion systems, adds utilities for loading and standardizing experimental CSV data, and provides Bayesian (MCMC) tools for parameter calibration against measured data.
 
