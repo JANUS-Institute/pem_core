@@ -76,6 +76,43 @@ class TestSplitNameAndUnit:
         assert name == "Thrust"
         assert unit == UNITS.millinewton
 
+    def test_square_brackets_auto_detect(self):
+        name, unit = _split_name_and_unit("Thrust [mN]")
+        assert name == "Thrust"
+        assert unit == UNITS.millinewton
+
+    def test_curly_brackets_auto_detect(self):
+        name, unit = _split_name_and_unit("Thrust {mN}")
+        assert name == "Thrust"
+        assert unit == UNITS.millinewton
+
+    def test_non_unit_bracket_content_ignored(self):
+        """Bracket content that is not a valid pint unit is not mistaken for a unit."""
+        name, unit = _split_name_and_unit("Ion current (some description)")
+        assert name == "Ion current (some description)"
+        assert unit is None
+
+    def test_multiple_unit_specs_raises(self):
+        """Two bracket groups that both parse as valid units → ValueError."""
+        with pytest.raises(ValueError, match="Multiple unit specifications"):
+            _split_name_and_unit("Thrust (mN) [kN]")
+
+    def test_trailing_content_after_unit_raises(self):
+        """Content after the closing bracket of the unit spec → ValueError."""
+        with pytest.raises(ValueError, match="Unexpected content"):
+            _split_name_and_unit("Thrust (mN) extra")
+
+    def test_explicit_bracket_type_restricts_detection(self):
+        """Explicit bracket_type limits scanning to that style; other brackets stay in the name."""
+        name, unit = _split_name_and_unit("Thrust (mN) [kN]", bracket_type="[]")
+        assert name == "Thrust (mN)"
+        assert unit == UNITS.kilonewton
+
+    def test_same_bracket_type_twice_raises_when_both_valid(self):
+        """Two () groups that both parse as units → ValueError even with explicit bracket_type."""
+        with pytest.raises(ValueError, match="Multiple unit specifications"):
+            _split_name_and_unit("Thrust (mN) (kN)", bracket_type="()")
+
 # ── _standardize_data ────────────────────────────────────────────────────────
 
 class TestStandardizeData:

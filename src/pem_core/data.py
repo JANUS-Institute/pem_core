@@ -119,16 +119,60 @@ def _parse_unit(u: pint.Unit | str | None) -> pint.Unit | None:
 
 BracketType = Literal['()', '[]', '{}']
 
-def _split_name_and_unit(key, bracket_type: BracketType = '()'):
-    """Given a string like 'Axial ion velocity (m/s)', split it into the name and the unit. The unit is optional, so if we have something like 'Thrust', then we should just return the name and None for the unit."""
-    left,right = bracket_type
-    bracket_ind = key.find(left)
-    if bracket_ind == -1:
+def _split_name_and_unit(key: str, bracket_type: BracketType | None = None):
+    """Split a column header like 'Axial ion velocity (m/s)' into name and unit.
+
+    The unit suffix is optional; 'Thrust' returns ('Thrust', None).
+
+    When `bracket_type` is ``None`` (default), the bracket style is
+    auto-detected per column by scanning for ``'()'``, ``'[]'``, and ``'{}'``
+    groups that contain a valid pint unit. Raises ``ValueError`` if more than
+    one unit specification is found in the header, or if content follows the
+    unit specification (both indicate likely data-curation errors).
+
+    Pass an explicit `bracket_type` to restrict detection to that style only.
+    """
+    pairs_to_try: list[BracketType] = [bracket_type] if bracket_type is not None else ['()', '[]', '{}']
+
+    # Collect all bracket groups (across all types to try) that parse as a valid unit.
+    matches: list[tuple[int, int, pint.Unit]] = []
+    for bt in pairs_to_try:
+        left, right = bt
+        start = 0
+        while True:
+            open_ind = key.find(left, start)
+            if open_ind == -1:
+                break
+            close_ind = key.find(right, open_ind + 1)
+            if close_ind == -1:
+                break
+            unit_str = key[open_ind + 1:close_ind].strip()
+            if unit_str:
+                try:
+                    matches.append((open_ind, close_ind, UNITS.parse_units(unit_str)))
+                except pint.UndefinedUnitError:
+                    pass
+            start = close_ind + 1
+
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple unit specifications found in column header '{key}'. "
+            "The unit should appear only once, at the end of the header."
+        )
+
+    if not matches:
         return key.strip(), None
-    
-    name = key[:bracket_ind].strip()
-    unit = key[bracket_ind+1:key.find(right, bracket_ind)].strip()
-    return name, UNITS.parse_units(unit)
+
+    open_ind, close_ind, unit = matches[0]
+
+    trailing = key[close_ind + 1:].strip()
+    if trailing:
+        raise ValueError(
+            f"Unexpected content '{trailing}' after unit specification in "
+            f"column header '{key}'. The unit must be the last element in the header."
+        )
+
+    return key[:open_ind].strip(), unit
 
 def _standardize_data(
         df: pd.DataFrame,
@@ -136,7 +180,7 @@ def _standardize_data(
         qois: dict[str, QoIProps],
         coords: Mapping[str, pint.Unit | str] | None = None,
         rename_map: dict[str,str] | None = None,
-        bracket_type: BracketType = "()",
+        bracket_type: BracketType | None = None,
         derived_cols: list[DerivedColumn] | None = None,
     ) -> pd.DataFrame:
     """Standardize the dataframe by ensuring required columns are present and appropriately scaled. This includes:
@@ -295,17 +339,20 @@ def load_single_dataset(
     qois: dict[str, QoIProps],
     coords: Mapping[str, pint.Unit | str] | None = None,
     rename_map: dict[str,str] | None = None,
-    unit_bracket_type: BracketType = "()",
+    unit_bracket_type: BracketType | None = None,
     derived_cols: list[DerivedColumn] | None = None,
 ) -> list[DataEntry]:
     """Load a CSV file and return one `DataEntry` per unique operating condition.
 
     Column names are matched case-insensitively. Units embedded in column
-    headers (e.g. ``"Thrust (mN)"``) are parsed and converted to the target
-    units declared in `qois` / `operating_vars`. Use `rename_map` to alias
-    column names that differ from the expected keys, `coords` to declare
-    the units of any coordinate columns used by field QoIs, and
-    `derived_cols` to compute columns that may be missing from the CSV.
+    headers (e.g. ``"Thrust (mN)"`` or ``"Thrust [mN]"``) are parsed and
+    converted to the target units declared in `qois` / `operating_vars`.
+    The bracket style (``'()'``, ``'[]'``, or ``'{}'``) is auto-detected
+    per column by default; pass `unit_bracket_type` to restrict to a single
+    style. Use `rename_map` to alias column names that differ from the
+    expected keys, `coords` to declare the units of any coordinate columns
+    used by field QoIs, and `derived_cols` to compute columns that may be
+    missing from the CSV.
     """
     df = pd.read_csv(file)
     df_standardized = _standardize_data(df, operating_vars, qois, coords=coords, rename_map=rename_map, bracket_type=unit_bracket_type, derived_cols=derived_cols)
@@ -318,7 +365,7 @@ def load_multiple_datasets(
     qois: dict[str, QoIProps],
     coords: Mapping[str, pint.Unit | str] | None = None,
     rename_map: dict[str,str] | None = None,
-    unit_bracket_type: BracketType = "()",
+    unit_bracket_type: BracketType | None = None,
     derived_cols: list[DerivedColumn] | None = None,
 ) -> list[DataEntry]:
     """Load and merge multiple CSV files into a single flat list of `DataEntry` objects.
