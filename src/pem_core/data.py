@@ -13,7 +13,8 @@ Typical workflow:
 
     1. Declare ``operating_vars`` and ``qois`` dicts that specify the expected
        column names, target units, and (for fields) coordinate names.
-    2. Call `load_single_dataset` or `load_multiple_datasets` to read one or
+       Optionally specify one or more derived columns to apply data transformations.
+   2. Call `load_single_dataset` or `load_multiple_datasets` to read one or
        more CSV files. Column names are matched case-insensitively; units
        embedded in headers (e.g. ``"Thrust (mN)"``) are parsed and converted
        automatically.
@@ -22,7 +23,7 @@ Typical workflow:
        the structured data into plain NumPy arrays for use in a likelihood.
 """
 import pint
-from typing import Literal, cast, TypedDict
+from typing import Callable, Literal, Mapping, cast, TypedDict
 from dataclasses import dataclass
 
 import numpy as np
@@ -78,6 +79,31 @@ class OpVarProps(TypedDict, total=False):
     unit: pint.Unit | str
     default: float
 
+@dataclass
+class DerivedColumn:
+    """Specification for a column that can be computed from other columns.
+
+    When `_standardize_data` encounters a missing column whose name matches
+    `target`, it checks whether all `required` columns are present. If so it
+    calls ``compute(df)`` to produce the new column and records `unit_from` as
+    the source for its unit (so that subsequent unit conversion works
+    correctly). Specs are tried in list order; the first one whose required
+    columns are all available wins.
+
+    Args:
+        target: Name of the column to produce (after casefolding / renaming).
+        required: Column names that must be present for this transform to fire.
+        compute: Function that receives the full DataFrame and returns a Series
+            for the new column.
+        unit_from: If given, the derived column inherits its unit from this
+            source column. If ``None``, no unit is tracked (the column is
+            treated as dimensionless / already in target units).
+    """
+    target: str
+    required: list[str]
+    compute: Callable[[pd.DataFrame], pd.Series]
+    unit_from: str | None = None
+
 # Load pint unit registry and define any custom units we need
 UNITS = pint.UnitRegistry()
 
@@ -104,15 +130,14 @@ def _split_name_and_unit(key, bracket_type: BracketType = '()'):
     unit = key[bracket_ind+1:key.find(right, bracket_ind)].strip()
     return name, UNITS.parse_units(unit)
 
-FLOW_RATE_KEY = "anode mass flow rate"
-
 def _standardize_data(
         df: pd.DataFrame,
         operating_vars: dict[str, OpVarProps],
         qois: dict[str, QoIProps],
-        coords: dict[str, pint.Unit | str] | None = None,
+        coords: Mapping[str, pint.Unit | str] | None = None,
         rename_map: dict[str,str] | None = None,
-        bracket_type: BracketType = "()"
+        bracket_type: BracketType = "()",
+        derived_cols: list[DerivedColumn] | None = None,
     ) -> pd.DataFrame:
     """Standardize the dataframe by ensuring required columns are present and appropriately scaled. This includes:
     - Scaling and renaming columns to match expected names and units.
@@ -152,23 +177,13 @@ def _standardize_data(
     for old, new in error_rename.items():
         unit_dict[new] = unit_dict.pop(old, None)
 
-    # 2. Replace total flow rate and anode-cathode flow ratio with an anode mass flow rate, if necessary
-    # TODO: remove this hard-code and allow more general data tranformations of this type
-    total_flow_key = "total flow rate"
-    ratio_key = "anode-cathode flow ratio"
-    if FLOW_RATE_KEY in operating_vars and FLOW_RATE_KEY not in df.columns:
-        if total_flow_key in df.columns and ratio_key in df.columns:
-            total_flow = df[total_flow_key]
-            ratio = df[ratio_key]
-            df.rename(columns={total_flow_key: FLOW_RATE_KEY}, inplace=True)
-            df[FLOW_RATE_KEY]= total_flow * ratio / (1 + ratio)
-            unit_dict[FLOW_RATE_KEY] = unit_dict[total_flow_key]
-            df.drop(columns=[ratio_key], inplace=True)
-            unit_dict.pop(ratio_key, None)
-            unit_dict.pop(total_flow_key, None)
-        else:
-            raise ValueError(f"Missing required flow rate information. To compute {FLOW_RATE_KEY}, we need either a column named '{FLOW_RATE_KEY}' or both '{total_flow_key}' and '{ratio_key}'.")
-     
+    # 2. Apply any caller-supplied derived-column transforms (in order; first match wins per target).
+    for derived in (derived_cols or []):
+        if derived.target not in df.columns:
+            if all(r in df.columns for r in derived.required):
+                df[derived.target] = derived.compute(df)
+                unit_dict[derived.target] = unit_dict.get(derived.unit_from) if derived.unit_from else None
+
     # 3. Perform unit conversions as needed
     for col, unit in unit_dict.items():
         if col.endswith(" uncertainty"):
@@ -278,20 +293,22 @@ def load_single_dataset(
     file: PathLike,
     operating_vars: dict[str, OpVarProps],
     qois: dict[str, QoIProps],
-    coords: dict[str, pint.Unit | str] | None = None,
+    coords: Mapping[str, pint.Unit | str] | None = None,
     rename_map: dict[str,str] | None = None,
-    unit_bracket_type: BracketType = "()"
+    unit_bracket_type: BracketType = "()",
+    derived_cols: list[DerivedColumn] | None = None,
 ) -> list[DataEntry]:
     """Load a CSV file and return one `DataEntry` per unique operating condition.
 
     Column names are matched case-insensitively. Units embedded in column
     headers (e.g. ``"Thrust (mN)"``) are parsed and converted to the target
     units declared in `qois` / `operating_vars`. Use `rename_map` to alias
-    column names that differ from the expected keys, and `coords` to declare
-    the units of any coordinate columns used by field QoIs.
+    column names that differ from the expected keys, `coords` to declare
+    the units of any coordinate columns used by field QoIs, and
+    `derived_cols` to compute columns that may be missing from the CSV.
     """
     df = pd.read_csv(file)
-    df_standardized = _standardize_data(df, operating_vars, qois, coords=coords, rename_map=rename_map, bracket_type=unit_bracket_type)
+    df_standardized = _standardize_data(df, operating_vars, qois, coords=coords, rename_map=rename_map, bracket_type=unit_bracket_type, derived_cols=derived_cols)
     dataset = _df_to_dataset(df_standardized, operating_vars, qois)
     return dataset
 
@@ -299,9 +316,10 @@ def load_multiple_datasets(
     files: list[PathLike],
     operating_vars: dict[str, OpVarProps],
     qois: dict[str, QoIProps],
-    coords: dict[str, pint.Unit | str] | None = None,
+    coords: Mapping[str, pint.Unit | str] | None = None,
     rename_map: dict[str,str] | None = None,
-    unit_bracket_type: BracketType = "()"
+    unit_bracket_type: BracketType = "()",
+    derived_cols: list[DerivedColumn] | None = None,
 ) -> list[DataEntry]:
     """Load and merge multiple CSV files into a single flat list of `DataEntry` objects.
 
@@ -312,7 +330,7 @@ def load_multiple_datasets(
     # TODO: check for and unify duplicate operating conditions
     all_data = []
     for file in files:
-        data = load_single_dataset(file, operating_vars, qois, coords=coords, rename_map=rename_map, unit_bracket_type=unit_bracket_type)
+        data = load_single_dataset(file, operating_vars, qois, coords=coords, rename_map=rename_map, unit_bracket_type=unit_bracket_type, derived_cols=derived_cols)
         all_data.extend(data)
     return all_data
 

@@ -10,6 +10,7 @@ from pem_core.data import (
     UNITS,
     DataEntry,
     DataField,
+    DerivedColumn,
     _df_to_dataset,
     _split_name_and_unit,
     _standardize_data,
@@ -225,6 +226,12 @@ class TestStandardizeData:
             "anode-cathode flow ratio": [ratio],
             "discharge voltage (V)": [300.0],
         })
+        derived = DerivedColumn(
+            target="anode mass flow rate",
+            required=["total flow rate", "anode-cathode flow ratio"],
+            compute=lambda d: d["total flow rate"] * d["anode-cathode flow ratio"] / (1 + d["anode-cathode flow ratio"]),
+            unit_from="total flow rate",
+        )
         result = _standardize_data(
             df,
             operating_vars={
@@ -232,13 +239,15 @@ class TestStandardizeData:
                 "discharge voltage": {"unit": UNITS.volt},
             },
             qois={},
+            derived_cols=[derived],
         )
         assert "anode mass flow rate" in result.columns
         assert math.isclose(result["anode mass flow rate"].iloc[0], expected)
 
     def test_flow_rate_missing_columns_raises(self):
+        # Without a matching derived_cols spec, the missing op_var raises normally.
         df = pd.DataFrame({"discharge voltage (V)": [300.0]})
-        with pytest.raises(ValueError, match="flow rate"):
+        with pytest.raises(ValueError, match="anode mass flow rate"):
             _standardize_data(
                 df,
                 operating_vars={
@@ -724,3 +733,149 @@ class TestStringUnits:
         )
         # 0, 1, 2 cm → 0, 0.01, 0.02 m
         assert math.isclose(result["axial position"].iloc[1], 0.01)
+
+
+# ── DerivedColumn ─────────────────────────────────────────────────────────────
+
+class TestDerivedColumn:
+    """Tests for the DerivedColumn mechanism in _standardize_data / load_single_dataset."""
+
+    OP_VARS: dict[str, OpVarProps] = {
+        "discharge voltage": {"unit": UNITS.volt},
+        "computed qty": {"unit": UNITS.meter},
+    }
+
+    def _simple_derived(self, target="computed qty"):
+        """A DerivedColumn that doubles 'raw qty (cm)' → target, inheriting cm unit."""
+        return DerivedColumn(
+            target=target,
+            required=["raw qty"],
+            compute=lambda df: df["raw qty"] * 2,
+            unit_from="raw qty",
+        )
+
+    def test_derived_column_fires_when_required_present(self):
+        df = pd.DataFrame({
+            "raw qty (cm)": [50.0],
+            "discharge voltage (V)": [300.0],
+        })
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[self._simple_derived()])
+        assert "computed qty" in result.columns
+        # 50 cm * 2 = 100 cm → converted to m = 1.0
+        assert math.isclose(result["computed qty"].iloc[0], 1.0)
+
+    def test_derived_column_skipped_when_target_already_present(self):
+        """If the target column already exists in the CSV, the spec must not overwrite it."""
+        df = pd.DataFrame({
+            "computed qty (m)": [99.0],
+            "raw qty (cm)": [1.0],
+            "discharge voltage (V)": [300.0],
+        })
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[self._simple_derived()])
+        assert math.isclose(result["computed qty"].iloc[0], 99.0)
+
+    def test_derived_column_skipped_when_required_missing(self):
+        """If required columns are absent, the spec silently does nothing."""
+        df = pd.DataFrame({"discharge voltage (V)": [300.0], "computed qty (m)": [5.0]})
+        # spec requires "raw qty" which is not present — should not crash
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[self._simple_derived()])
+        assert "computed qty" in result.columns
+
+    def test_first_matching_spec_wins(self):
+        """When two specs share a target, the first whose required cols are present is used."""
+        spec_a = DerivedColumn(
+            target="computed qty",
+            required=["source a"],
+            compute=lambda df: df["source a"] * 10,
+            unit_from="source a",
+        )
+        spec_b = DerivedColumn(
+            target="computed qty",
+            required=["source b"],
+            compute=lambda df: df["source b"] * 20,
+            unit_from="source b",
+        )
+        df = pd.DataFrame({
+            "source a (m)": [3.0],
+            "source b (m)": [3.0],
+            "discharge voltage (V)": [300.0],
+        })
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[spec_a, spec_b])
+        # spec_a fires first: 3.0 * 10 = 30 m
+        assert math.isclose(result["computed qty"].iloc[0], 30.0)
+
+    def test_second_spec_fires_when_first_required_missing(self):
+        """Fallback to second spec when first spec's required columns are absent."""
+        spec_a = DerivedColumn(
+            target="computed qty",
+            required=["source a"],
+            compute=lambda df: df["source a"] * 10,
+            unit_from="source a",
+        )
+        spec_b = DerivedColumn(
+            target="computed qty",
+            required=["source b"],
+            compute=lambda df: df["source b"] * 20,
+            unit_from="source b",
+        )
+        df = pd.DataFrame({
+            "source b (m)": [3.0],   # only source b present
+            "discharge voltage (V)": [300.0],
+        })
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[spec_a, spec_b])
+        # spec_b fires: 3.0 * 20 = 60 m
+        assert math.isclose(result["computed qty"].iloc[0], 60.0)
+
+    def test_unit_inherited_from_unit_from_and_converted(self):
+        """The derived column inherits the source unit and is converted to the target unit."""
+        spec = DerivedColumn(
+            target="computed qty",
+            required=["raw qty"],
+            compute=lambda df: df["raw qty"],   # identity
+            unit_from="raw qty",
+        )
+        df = pd.DataFrame({
+            "raw qty (cm)": [100.0],    # 100 cm → 1 m after conversion
+            "discharge voltage (V)": [300.0],
+        })
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[spec])
+        assert math.isclose(result["computed qty"].iloc[0], 1.0)
+
+    def test_no_unit_from_means_no_conversion(self):
+        """When unit_from is None the derived column value is left as-is."""
+        spec = DerivedColumn(
+            target="computed qty",
+            required=["raw qty"],
+            compute=lambda df: df["raw qty"],
+            unit_from=None,
+        )
+        df = pd.DataFrame({
+            "raw qty": [42.0],
+            "discharge voltage (V)": [300.0],
+        })
+        result = _standardize_data(df, self.OP_VARS, qois={}, derived_cols=[spec])
+        assert math.isclose(result["computed qty"].iloc[0], 42.0)
+
+    def test_derived_cols_via_load_single_dataset(self, tmp_path):
+        """derived_cols threads all the way through load_single_dataset."""
+        f = tmp_path / "data.csv"
+        f.write_text(
+            "Discharge Voltage (V),Total Flow (mg/s),Ratio\n"
+            "300.0,10.0,4.0\n"
+        )
+        # anode flow = total * ratio / (1 + ratio)  → 10 * 4/5 = 8 mg/s
+        spec = DerivedColumn(
+            target="anode flow",
+            required=["total flow", "ratio"],
+            compute=lambda df: df["total flow"] * df["ratio"] / (1 + df["ratio"]),
+            unit_from="total flow",
+        )
+        entries = load_single_dataset(
+            f,
+            operating_vars={"discharge voltage": {"unit": "V"}, "anode flow": {"unit": "mg/s"}},
+            qois={},
+            rename_map={"total flow": "total flow", "ratio": "ratio"},
+            derived_cols=[spec],
+        )
+        assert len(entries) == 1
+        assert math.isclose(entries[0].operating_condition["anode flow"], 8.0)
