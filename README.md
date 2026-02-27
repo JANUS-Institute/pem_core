@@ -54,7 +54,7 @@ samples = sampler.sample(n)   # list of (sample, logp, accepted) tuples
 
 # Draw samples in a loop:
 for sample, logp, accepted in sampler:
-    # do something with the sampler
+    # do something with the sample
 
 ```
 

@@ -31,9 +31,11 @@ from typing import Callable, TypeVar
 import numpy as np
 from numpy.typing import NDArray
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from amisc import distribution as distributions
 from MCMCIterators.samplers import DelayedRejectionAdaptiveMetropolis
+from MCMCIterators.utils import auto_correlation as auto_correlation
 from pem_core import ArrayLike, PathLike, PEM, Variable
 
 # Type aliases
@@ -47,6 +49,10 @@ LOGPDF_HEADER = "log posterior"
 ACCEPT_HEADER = "accepted"
 COV_FILE = "cov_chol.csv"
 SAMPLE_FILE = "samples.csv"
+
+#==================================================================================================
+# Likelhood helper functions
+#==================================================================================================
 
 def gauss_logpdf_1D(x: F, mean: F, std: F) -> F:
     """
@@ -122,6 +128,10 @@ def _log_posterior(pem: PEM, params: dict[str, ArrayLike], likelihood: Likelihoo
         return -np.inf
 
     return log_prior + log_likelihood
+
+#==================================================================================================
+# Sampler class and subclasses
+#==================================================================================================
 
 class Sampler(ABC):
     def __init__(
@@ -255,7 +265,7 @@ class Sampler(ABC):
 
             # We support the variables being in a different order than in the original file, so we need to reconstruct and reindex a dataframe
             # TODO: this should work if we remove a variable, but if we add a variable this should respond gracefully.
-            # Probably, we should default-construct an initial sample and covariace and then populate field-by-field based on the contents of the file.
+            # Probably, we should default-construct an initial sample and covariance and then populate field-by-field based on the contents of the file.
             df_cov = pd.DataFrame(cov_matrix, columns=df_chol.columns)
             cov_matrix = df_cov[self.variable_names].to_numpy().astype(np.float64)
             assert cov_matrix.shape[0] == cov_matrix.shape[1]
@@ -368,3 +378,58 @@ class DRAMSampler(Sampler):
 
     def propose_sample(self):
         return self.sampler.__next__()
+    
+#==================================================================================================
+# Analysis helper functions
+#==================================================================================================
+
+# We also export auto_correlation from MCMCIterators
+# TODO: integrated autocorrelation, effective sample size, corner plots
+
+def read_sample_file(path: PathLike):
+    df = pd.read_csv(path)
+    stats_columns = [ID_HEADER, LOGPDF_HEADER, ACCEPT_HEADER]
+    stats_col_set = set(stats_columns)
+    var_columns = list(c for c in df.columns if c not in stats_col_set)
+    return df[var_columns], df[stats_columns]
+
+def plot_traces(df: pd.DataFrame, num_cols = 2, vars: list[str] | None = None, alt_var_names: dict[str, str] | list[str] | None = None, squeeze=False):
+    vars_to_include = list(df.columns) if vars is None else vars
+
+    var_names = [v for v in vars_to_include]
+    if alt_var_names is not None:
+        if isinstance(alt_var_names, dict):
+            for (i, var) in enumerate(var_names):
+                var_names[i] = alt_var_names.get(var, var)
+        else:
+            for i, alt in enumerate(alt_var_names):
+                if i >= len(var_names):
+                    break
+                var_names[i] = alt
+
+    num_cols = min(num_cols, len(vars_to_include)) 
+    num_rows = math.ceil(len(vars_to_include) / num_cols)
+
+    ax_width = 3.0
+    ax_height = 1.5
+    figsize = (ax_width * num_cols, ax_height * num_rows)
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=figsize, squeeze=False, layout='constrained')
+
+    for (i, ax) in enumerate(axs.flatten()):
+        if i >= len(vars_to_include):
+            ax.axis('off')
+            continue
+        
+        var = vars_to_include[i]
+        col = df[var].to_numpy()
+        ax.set(title=var_names[i], xlim=(0, len(col)))
+        ax.plot(col, color='black')
+
+    # Remove x-axis in all rows but last    
+    for (i, row) in enumerate(axs):
+        if i < num_rows - 1:
+            [ax.set(xticklabels=[]) for ax in row]
+        else:
+            [ax.set(xlabel="Sample number") for ax in row]
+
+    return fig, (axs.squeeze() if squeeze else axs)
