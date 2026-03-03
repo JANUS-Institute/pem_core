@@ -26,4 +26,4 @@ dev = ["pytest>=8.0"]
 testpaths = ["tests"]
 
 [tool.uv.sources]
-amisc = { path = "../amisc", editable = true }
+amisc = { git = "https://github.com/eckelsjd/amisc" }
