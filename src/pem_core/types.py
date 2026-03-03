@@ -5,8 +5,8 @@ from pathlib import Path
 from amisc import Variable as Variable, Component as Component
 import amisc.distribution as distribution
 import amisc.transform as transform
-import amisc.typing as amisc
+from amisc.typing import Dataset
 
 PathLike = Path | str
 
-__all__ = ["Variable", "Component", "NDArray", "ArrayLike", "PathLike", "distribution", "transform", "amisc"]
+__all__ = ["Variable", "Component", "NDArray", "ArrayLike", "PathLike", "distribution", "transform", "Dataset"]

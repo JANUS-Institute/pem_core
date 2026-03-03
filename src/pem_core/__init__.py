@@ -3,9 +3,9 @@ from amisc import System, Variable, Component
 from typing import Literal
 import os
 from pathlib import Path
-import amisc.utils as amisc_utils
+from amisc.utils import get_logger
 
-all = ["PEM", "amisc_utils"]
+all = ["PEM", "get_logger"]
 
 class PEM(System):
     def __init__(self, *args, **kwargs):
