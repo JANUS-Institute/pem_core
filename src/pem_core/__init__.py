@@ -1,9 +1,11 @@
 from .types import ArrayLike, PathLike
 from amisc import System, Variable, Component
 from typing import Literal
-import numpy as np
 import os
 from pathlib import Path
+import amisc.utils as amisc_utils
+
+all = ["PEM", "amisc_utils"]
 
 class PEM(System):
     def __init__(self, *args, **kwargs):
