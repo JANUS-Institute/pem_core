@@ -3,7 +3,7 @@ from amisc import System, Variable, Component
 from typing import Literal
 import os
 from pathlib import Path
-from amisc.utils import get_logger
+from amisc.utils import get_logger as get_logger
 
 all = ["PEM", "get_logger"]
 
