@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "amisc",
+    "mcmciterators",
     "numpy",
     "pandas",
     "pint",
@@ -27,3 +28,4 @@ testpaths = ["tests"]
 
 [tool.uv.sources]
 amisc = { git = "https://github.com/archermarx/amisc.git" }
+mcmciterators = { git = "https://github.com/goroda/MCMCIterators.git" }

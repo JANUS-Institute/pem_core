@@ -405,6 +405,11 @@ wheels = [
 ]
 
 [[package]]
+name = "mcmciterators"
+version = "0.0.0"
+source = { git = "https://github.com/goroda/MCMCIterators.git#6f9c2054a584bc69f134b5576c3fe94c4d4d5a81" }
+
+[[package]]
 name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -567,6 +572,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "amisc" },
+    { name = "mcmciterators" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pint" },
@@ -581,6 +587,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amisc", git = "https://github.com/archermarx/amisc.git" },
+    { name = "mcmciterators", git = "https://github.com/goroda/MCMCIterators.git" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pint" },
