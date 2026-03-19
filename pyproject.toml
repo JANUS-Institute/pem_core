@@ -8,8 +8,8 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "amisc",
-    "mcmciterators",
+    "amisc @ git+https://github.com/archermarx/amisc.git",
+    "mcmciterators @ git+https://github.com/goroda/MCMCIterators.git",
     "numpy",
     "pandas",
     "pint",
@@ -25,7 +25,3 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.uv.sources]
-amisc = { git = "https://github.com/archermarx/amisc.git" }
-mcmciterators = { git = "https://github.com/goroda/MCMCIterators.git" }
